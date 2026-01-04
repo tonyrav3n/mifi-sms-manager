@@ -66,40 +66,47 @@ class MiFiSMSManager:
         return None
 
     def login(self):
-        """Authenticate with the device."""
+        """Authenticate with the device using ZTE MF935 algorithm.
+        
+        The device uses WEB_ATTR_IF_SUPPORT_SHA256=2, which means:
+        password = SHA256(SHA256(password) + LD_token)
+        
+        Note: The device expects UPPERCASE hex strings.
+        """
         # Get token for password hashing
         token = self.get_login_token()
         
-        # Try different password hashing methods used by ZTE
-        password_variants = [
-            self.password,  # Plain password
-            hashlib.sha256(self.password.encode()).hexdigest(),  # SHA256
-            hashlib.md5(self.password.encode()).hexdigest(),  # MD5
-        ]
+        if not token:
+            print("Error: Could not get login token (LD)")
+            return False
         
-        if token:
-            # Hash with token
-            password_variants.append(
-                hashlib.sha256((self.password + token).encode()).hexdigest()
-            )
-            password_variants.append(
-                hashlib.md5((self.password + token).encode()).hexdigest()
-            )
+        # ZTE MF935 password algorithm: SHA256(SHA256(password) + LD)
+        # IMPORTANT: Device uses UPPERCASE hex
+        sha256_password = hashlib.sha256(self.password.encode()).hexdigest().upper()
+        final_password = hashlib.sha256((sha256_password + token).encode()).hexdigest().upper()
         
-        for pwd in password_variants:
-            data = {
-                "isTest": "false",
-                "goformId": "LOGIN",
-                "password": pwd
-            }
-            result = self._post_cmd(data)
-            if result and result.get("result") == "0":
+        data = {
+            "isTest": "false",
+            "goformId": "LOGIN",
+            "password": final_password
+        }
+        
+        result = self._post_cmd(data)
+        
+        if result:
+            error_code = result.get("result")
+            if error_code == "0":
                 print("Login successful!")
                 return True
-            elif result:
-                print(f"Login attempt result: {result}")
+            elif error_code == "3":
+                # Check if another session is active (browser logged in)
+                print("Login failed: Wrong password or another session is active")
+                print("(If browser is logged in, logout from browser first or use --skip-login)")
+            elif error_code == "4":
+                print("Login failed: Account locked! Please reboot device and wait.")
+            else:
+                print(f"Login failed: Error code {error_code}")
         
-        print("Note: Login may not be required for SMS operations")
         return False
 
     def get_sms_capacity(self):
@@ -238,13 +245,18 @@ def main():
     parser.add_argument("--password", default="admin", help="Admin password")
     parser.add_argument("--action", choices=["delete", "list", "diagnose"], 
                         default="diagnose", help="Action to perform")
+    parser.add_argument("--skip-login", action="store_true", 
+                        help="Skip login attempt (useful if account is locked)")
     
     args = parser.parse_args()
     
     manager = MiFiSMSManager(host=args.host, password=args.password)
     
-    # Try to login first
-    manager.login()
+    # Try to login first (unless skipped)
+    if not args.skip_login:
+        manager.login()
+    else:
+        print("Skipping login as requested...")
     
     # Show capacity
     manager.get_sms_capacity()
