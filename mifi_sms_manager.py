@@ -32,7 +32,7 @@ class MiFiSMSManager:
         
         try:
             resp = self.session.get(url, params=params, headers=headers, timeout=10)
-            return resp.json()
+            return json.loads(resp.text, strict=False)
         except Exception as e:
             print(f"Error: {e}")
             return None
@@ -47,7 +47,7 @@ class MiFiSMSManager:
         
         try:
             resp = self.session.post(url, data=data, headers=headers, timeout=10)
-            return resp.json()
+            return json.loads(resp.text, strict=False)
         except Exception as e:
             print(f"Error: {e}")
             return None
@@ -185,33 +185,50 @@ class MiFiSMSManager:
         """Delete all SMS messages from device and SIM."""
         print("\n=== Deleting All SMS ===")
         
-        # First try to get the list and delete individually
-        for mem_store in [1, 2]:  # 1=device, 2=SIM
+        deleted_ids = set()
+        
+        for mem_store in [1, 2]:
             store_name = "device" if mem_store == 1 else "SIM"
             print(f"\nChecking {store_name} storage...")
             
-            result = self.get_sms_list(mem_store=mem_store, per_page=100)
+            result = self.get_sms_list(mem_store=mem_store, per_page=500)
             messages = result.get("messages", [])
             
             if messages:
                 msg_ids = [msg.get("id") for msg in messages if msg.get("id")]
                 if msg_ids:
                     print(f"Found {len(msg_ids)} messages in {store_name}")
-                    self.delete_sms(msg_ids)
+                    all_ids = ";".join(str(i) for i in msg_ids)
+                    self.delete_sms(all_ids)
+                    deleted_ids.update(msg_ids)
         
-        # Also try bulk delete commands
-        bulk_delete_attempts = [
-            {"goformId": "DELETE_SMS", "msg_id": "-1", "isTest": "false"},
-            {"goformId": "DELETE_SMS", "msg_id": "del_all", "isTest": "false"},
-            {"goformId": "DELETE_ALL_SMS", "isTest": "false"},
-            {"goformId": "delete_all_sms", "isTest": "false"},
-        ]
+        capacity = self._get_cmd("sms_capacity_info")
+        remaining = int(capacity.get("sms_nv_rev_total", "0")) if capacity else 0
         
-        print("\nTrying bulk delete methods...")
-        for data in bulk_delete_attempts:
+        if remaining > 0:
+            print(f"\n{remaining} messages still remain — trying sequential ID delete...")
+            all_ids = ";".join(str(i) for i in range(200))
+            data = {"goformId": "DELETE_SMS", "msg_id": all_ids, "isTest": "false"}
             result = self._post_cmd(data)
             if result:
-                print(f"Bulk delete ({data['goformId']}): {result}")
+                print(f"Sequential delete result: {result}")
+            
+            capacity = self._get_cmd("sms_capacity_info")
+            remaining = int(capacity.get("sms_nv_rev_total", "0")) if capacity else 0
+            
+            if remaining > 0:
+                print(f"{remaining} messages still remain — deleting one-by-one...")
+                for i in range(200):
+                    result = self._post_cmd({
+                        "goformId": "DELETE_SMS",
+                        "msg_id": str(i),
+                        "isTest": "false"
+                    })
+                    if result and result.get("result") == "success":
+                        deleted_ids.add(i)
+        
+        if deleted_ids:
+            print(f"\nProcessed {len(deleted_ids)} message IDs")
 
     def run_diagnostics(self):
         """Run diagnostics to discover API endpoints."""
